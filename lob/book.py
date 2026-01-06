@@ -31,6 +31,45 @@ class LimitOrderBook:
             return None
         return self.best_ask() - self.best_bid()
     
+    def depth(self, side: str, levels: int = 5) -> List[tuple[int, int]]:
+        if levels <= 0:
+            return []
+
+        if side == "BID":
+            book = self.bids
+            prices = self.bid_prices
+            # best bid is highest price
+            pxs = list(reversed(prices[-levels:]))
+        elif side == "ASK":
+            book = self.asks
+            prices = self.ask_prices
+            # best ask is lowest price
+            pxs = prices[:levels]
+        else:
+            raise ValueError(f"Invalid side, must be BID or ASK, got: {side}")
+
+        out: List[tuple[int, int]] = []
+        for px in pxs:
+            q = book.get(px)
+            if not q:
+                continue
+            total = 0
+            for oid in q:
+                o = self.orders.get(oid)
+                if o is not None:
+                    total += o.qty
+            out.append((px, total))
+        return out
+    
+    def imbalance(self, levels: int = 1) -> float:
+        bid_vol = sum(qty for _, qty in self.depth("BID", levels=levels))
+        ask_vol = sum(qty for _, qty in self.depth("ASK", levels=levels))
+        denom = bid_vol + ask_vol
+        if denom == 0:
+            return 0.0
+        return (bid_vol - ask_vol) / denom
+        
+    
     #Core API
     
     def add_limit(self, order: Order) -> List[Fill]:

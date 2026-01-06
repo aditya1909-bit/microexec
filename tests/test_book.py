@@ -63,3 +63,31 @@ def test_crossing_with_remainder():
 
     assert sum(f.qty for f in fills) == 3
     assert book.best_bid() == 105
+    
+def test_depth_aggregates_quantity_by_price_level():
+    book = LimitOrderBook()
+    
+    book.add_limit(Order(1, "ASK", 101, 3, 0))
+    book.add_limit(Order(2, "ASK", 101, 7, 1))
+    book.add_limit(Order(3, "ASK", 102, 5, 2))
+    
+    assert book.depth("ASK", levels = 2) == [(101, 10), (102, 5)]
+
+def test_depth_orders_best_outward():
+    book = LimitOrderBook()
+    book.add_limit(Order(1, "BID", 99, 1, 0))
+    book.add_limit(Order(2, "BID", 101, 2, 1))
+    book.add_limit(Order(3, "BID", 100, 3, 2))
+    
+    assert book.depth("BID", levels = 2) == [(101, 2), (100, 3)]
+
+def test_imbalance_range_and_empty_book():
+    book = LimitOrderBook()
+    assert book.imbalance(levels = 1) == 0.0
+    
+    book.add_limit(Order(1, "BID", 100, 10, 0))
+    book.add_limit(Order(2, "ASK", 101, 2, 1))
+    
+    im = book.imbalance(levels = 1)
+    assert -1.0 <= im <= 1.0
+    assert im > 0.0
