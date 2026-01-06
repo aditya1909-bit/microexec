@@ -29,14 +29,22 @@ class FlowConfig:
     
     #Limit Placement
     min_offset: int = 1
-    max_offset: int = 1
+    max_offset: int = 5
+
+    # Bias limit placements toward the touch (smaller offsets get more weight).
+    # Weight for offset k is proportional to 1 / k**offset_power.
+    offset_power: float = 2.0
     
     #Quantity Range
     min_qty: int = 1
     max_qty: int = 3
 
-    # Liquidity floor: if top-of-book is too empty, force LIMIT orders to replenish.
-    min_touch_qty: int = 30
+    # Market order quantity range (larger so market orders can walk multiple levels)
+    min_market_qty: int = 1
+    max_market_qty: int = 12
+
+    # Liquidity floor: if top-of-book is too empty, force LIMIT orders to replenish (keep small so thinning can occur).
+    min_touch_qty: int = 5
 
     cancel_fallback_to_limit: bool = True
 
@@ -78,6 +86,17 @@ class PoissonOrderFlow:
         else:
             return "CANCEL"
         
+    def sample_offset(self) -> int:
+        lo = self.config.min_offset
+        hi = self.config.max_offset
+        if hi <= lo:
+            return lo
+        offsets = list(range(lo, hi + 1))
+        p = self.config.offset_power
+        # Heavier weight near the touch.
+        weights = [1.0 / (k ** p) for k in offsets]
+        return self.rng.choices(offsets, weights=weights, k=1)[0]
+    
     def step(self, book: LimitOrderBook, ts: int) -> tuple[EventKind, int]:
         n_orders = len(book.orders)
         soft = self.config.soft_max_orders
@@ -125,7 +144,7 @@ class PoissonOrderFlow:
                 side = "ASK"
             else:
                 side = "BID" if self.rng.random() < 0.5 else "ASK"
-            offset = self.rng.randint(self.config.min_offset, self.config.max_offset)
+            offset = self.sample_offset()
             qty = self.rng.randint(self.config.min_qty, self.config.max_qty)
             
             px = mid - offset if side == "BID" else mid + offset
@@ -160,7 +179,7 @@ class PoissonOrderFlow:
                     side = "ASK"
                 else:
                     side = "BID" if self.rng.random() < 0.5 else "ASK"
-                offset = self.rng.randint(self.config.min_offset, self.config.max_offset)
+                offset = self.sample_offset()
                 qty = self.rng.randint(self.config.min_qty, self.config.max_qty)
                 px = mid - offset if side == "BID" else mid + offset
                 oid = self._new_order_id()
@@ -178,7 +197,7 @@ class PoissonOrderFlow:
                 side = "BID" if self.rng.random() < 0.75 else "ASK"
             else:
                 side = "BID" if self.rng.random() < 0.5 else "ASK"
-            qty = self.rng.randint(self.config.min_qty, self.config.max_qty)
+            qty = self.rng.randint(self.config.min_market_qty, self.config.max_market_qty)
             
             fills = book.add_market(
                 side = side,
