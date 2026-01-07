@@ -1,0 +1,11 @@
+{
+  "configurations": [
+    {
+      "name": "macOS",
+      "compileCommands": "${workspaceFolder}/cpp/build/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++17"
+    }
+  ],
+  "version": 4
+}

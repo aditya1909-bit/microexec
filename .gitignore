@@ -8,6 +8,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.vscode/
 
 #Pytest
 .pytest_cache/
@@ -15,3 +16,6 @@ env/
 
 #OS
 .DS_Store
+
+#cpp
+cpp/build/

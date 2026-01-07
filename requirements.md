@@ -1,3 +1,4 @@
 pytest
 matplotlib
 joblib
+cmake
