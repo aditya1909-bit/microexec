@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import os
 from math import sqrt
 from pathlib import Path
 from statistics import mean, pstdev
 
 from joblib import Parallel, delayed
 
-from sim.flow import FlowConfig
+from sim.flow import FlowConfig, Side
 from sim.execution.twap import run_twap
 
 
@@ -52,8 +53,8 @@ def _run_one(seed: int, total_qty: int, child_interval: int, penalty_per_share: 
     else:
         d["impact_per_share"] = max(0.0, float(sps) - 1.0)
 
-    bid_touch = book.depth("BID", levels=1)
-    ask_touch = book.depth("ASK", levels=1)
+    bid_touch = book.depth(Side.BID, levels=1)
+    ask_touch = book.depth(Side.ASK, levels=1)
 
     d.update(
         {
@@ -68,6 +69,13 @@ def _run_one(seed: int, total_qty: int, child_interval: int, penalty_per_share: 
         }
     )
     return d
+
+
+def _run_chunk(chunk: list[tuple[int, int, int, float]], horizon_events: int, warmup_events: int) -> list[dict]:
+    out = []
+    for seed, total_qty, child_interval, penalty_per_share in chunk:
+        out.append(_run_one(seed, total_qty, child_interval, penalty_per_share, horizon_events, warmup_events))
+    return out
 
 
 if __name__ == "__main__":
@@ -90,11 +98,14 @@ if __name__ == "__main__":
                 for penalty_per_share in penalty_grid:
                     tasks.append((seed, total_qty, child_interval, penalty_per_share))
 
-    # Run in parallel
+    cpu = os.cpu_count() or 1
+    chunk_size = max(1, len(tasks) // (cpu * 4))
+    chunks = [tasks[i : i + chunk_size] for i in range(0, len(tasks), chunk_size)]
+
     rows = Parallel(n_jobs=-1, prefer="processes")(
-        delayed(_run_one)(seed, total_qty, child_interval, penalty_per_share, horizon_events, warmup_events)
-        for (seed, total_qty, child_interval, penalty_per_share) in tasks
+        delayed(_run_chunk)(chunk, horizon_events, warmup_events) for chunk in chunks
     )
+    rows = [r for chunk in rows for r in chunk]
 
     #Aggregate by (total_qty, child_interval, penalty_per_share)
     grouped: dict[tuple[int, int, float], list[dict]] = {}

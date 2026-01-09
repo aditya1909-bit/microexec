@@ -1,5 +1,5 @@
 from sim.engine import run_sim
-from sim.flow import FlowConfig
+from sim.flow import FlowConfig, Side
 
 
 if __name__ == "__main__":
@@ -15,6 +15,6 @@ if __name__ == "__main__":
     print(f"avg spread (when defined): {stats.avg_spread():.3f}")
     print(f"best bid: {book.best_bid()} | best ask: {book.best_ask()} | mid: {book.mid()}")
 
-    print("top depth (BID):", book.depth("BID", levels=5))
-    print("top depth (ASK):", book.depth("ASK", levels=5))
+    print("top depth (BID):", book.depth(Side.BID, levels=5))
+    print("top depth (ASK):", book.depth(Side.ASK, levels=5))
     print("imbalance (1):", book.imbalance(levels=1))

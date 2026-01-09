@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import os
 from math import sqrt
 from pathlib import Path
 from statistics import mean, pstdev
 
 from joblib import Parallel, delayed
 
-from sim.flow import FlowConfig
+from sim.flow import FlowConfig, Side
 from sim.execution.twap import run_twap
 from sim.execution.vwap import run_vwap
 
@@ -77,13 +78,24 @@ def _run_one(
     d["penalty_per_share"] = penalty_per_share
     d["impact_per_share"] = _impact_per_share(d.get("shortfall_per_share"))
 
-    bid_touch = book.depth("BID", levels=1)
-    ask_touch = book.depth("ASK", levels=1)
+    bid_touch = book.depth(Side.BID, levels=1)
+    ask_touch = book.depth(Side.ASK, levels=1)
     d["end_bid_touch"] = bid_touch[0][1] if bid_touch else 0
     d["end_ask_touch"] = ask_touch[0][1] if ask_touch else 0
     d["end_imbalance_1"] = book.imbalance(levels=1)
 
     return d
+
+
+def _run_chunk(
+    chunk: list[tuple[str, int, int, int, float]],
+    horizon_events: int,
+    warmup_events: int,
+) -> list[dict]:
+    out = []
+    for algo, seed, total_qty, interval, penalty_per_share in chunk:
+        out.append(_run_one(algo, seed, total_qty, interval, penalty_per_share, horizon_events, warmup_events))
+    return out
 
 
 if __name__ == "__main__":
@@ -94,9 +106,9 @@ if __name__ == "__main__":
     interval_grid = [50, 100, 200, 500, 1000]  # child_interval for TWAP, bucket_interval for VWAP
     penalty_grid = [0.0, 1.0, 2.0, 5.0]
 
-    seed_grid = list(range(400))
+    seed_grid = list(range(20))
 
-    horizon_events = 100_000
+    horizon_events = 10_000
     warmup_events = 500
 
     # Build task list
@@ -108,11 +120,14 @@ if __name__ == "__main__":
                     for penalty_per_share in penalty_grid:
                         tasks.append((algo, seed, total_qty, interval, penalty_per_share))
 
-    # Run in parallel
+    cpu = os.cpu_count() or 1
+    chunk_size = max(1, len(tasks) // (cpu * 4))
+    chunks = [tasks[i : i + chunk_size] for i in range(0, len(tasks), chunk_size)]
+
     rows = Parallel(n_jobs=-1, prefer="processes")(
-        delayed(_run_one)(algo, seed, total_qty, interval, penalty_per_share, horizon_events, warmup_events)
-        for (algo, seed, total_qty, interval, penalty_per_share) in tasks
+        delayed(_run_chunk)(chunk, horizon_events, warmup_events) for chunk in chunks
     )
+    rows = [r for chunk in rows for r in chunk]
 
     # Aggregate by (algo, total_qty, interval, penalty_per_share)
     grouped: dict[tuple[str, int, int, float], list[dict]] = {}

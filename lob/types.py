@@ -1,25 +1,9 @@
-from dataclasses import dataclass
-from typing import Literal
+from ._cpp import lob_cpp
 
-Side = Literal["BID", "ASK"]
-OrderType = Literal["LIMIT", "MARKET"]
-Liquidity = Literal["MAKER", "TAKER"]
+Fill = lob_cpp.Fill
+Liquidity = lob_cpp.Liquidity
+Order = lob_cpp.Order
+OrderType = lob_cpp.OrderType
+Side = lob_cpp.Side
 
-@dataclass
-class Order:
-    id: int
-    side: Side
-    px: int #Integer Ticks
-    qty: int
-    ts: int #Integer Microseconds
-    owner: str = "SIM"
-    order_type: OrderType = "LIMIT"
-
-
-@dataclass
-class Fill:
-    order_id: int
-    px: int
-    qty: int
-    liquidity: Liquidity
-    ts: int
+__all__ = ["Side", "OrderType", "Liquidity", "Order", "Fill"]

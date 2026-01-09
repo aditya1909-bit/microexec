@@ -20,6 +20,7 @@ pybind11_add_module(lob_cpp
   src/engine.cpp
   src/book.cpp
   src/flow.cpp
+  src/execution.cpp
 )
 
 # Reasonable warnings

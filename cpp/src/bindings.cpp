@@ -4,6 +4,7 @@
 namespace py = pybind11;
 
 #include "book.hpp"
+#include "execution.hpp"
 #include "engine.hpp"
 #include "flow.hpp"
 #include "stats.hpp"
@@ -90,6 +91,44 @@ PYBIND11_MODULE(lob_cpp, m){
         .def_readwrite("cancel_fallback_to_limit", &FlowConfig::cancel_fallback_to_limit)
         .def("validate", &FlowConfig::validate);
 
+    py::class_<PoissonOrderFlow>(m, "PoissonOrderFlow")
+        .def(py::init<const FlowConfig&, int64_t>(), py::arg("config"), py::arg("seed") = 0)
+        .def("step", &PoissonOrderFlow::step, py::arg("book"), py::arg("ts"))
+        .def("step_n", &PoissonOrderFlow::step_n, py::arg("book"), py::arg("start_ts"), py::arg("n_events"));
+
+    py::class_<TwapReport>(m, "TwapReport")
+        .def_readwrite("side", &TwapReport::side)
+        .def_readwrite("target_qty", &TwapReport::target_qty)
+        .def_readwrite("filled_qty", &TwapReport::filled_qty)
+        .def_readwrite("avg_fill_px", &TwapReport::avg_fill_px)
+        .def_readwrite("arrival_mid", &TwapReport::arrival_mid)
+        .def_readwrite("shortfall", &TwapReport::shortfall)
+        .def_readwrite("n_child_orders", &TwapReport::n_child_orders)
+        .def_readwrite("unfilled_qty", &TwapReport::unfilled_qty)
+        .def_readwrite("completion_rate", &TwapReport::completion_rate)
+        .def_readwrite("penalty_per_share", &TwapReport::penalty_per_share)
+        .def_readwrite("penalized_cost", &TwapReport::penalized_cost)
+        .def_readwrite("shortfall_per_share", &TwapReport::shortfall_per_share)
+        .def_readwrite("penalized_cost_per_share", &TwapReport::penalized_cost_per_share);
+
+    py::class_<VwapReport>(m, "VwapReport")
+        .def_readwrite("side", &VwapReport::side)
+        .def_readwrite("target_qty", &VwapReport::target_qty)
+        .def_readwrite("filled_qty", &VwapReport::filled_qty)
+        .def_readwrite("avg_fill_px", &VwapReport::avg_fill_px)
+        .def_readwrite("arrival_mid", &VwapReport::arrival_mid)
+        .def_readwrite("shortfall", &VwapReport::shortfall)
+        .def_readwrite("n_child_orders", &VwapReport::n_child_orders)
+        .def_readwrite("unfilled_qty", &VwapReport::unfilled_qty)
+        .def_readwrite("completion_rate", &VwapReport::completion_rate)
+        .def_readwrite("penalty_per_share", &VwapReport::penalty_per_share)
+        .def_readwrite("penalized_cost", &VwapReport::penalized_cost)
+        .def_readwrite("shortfall_per_share", &VwapReport::shortfall_per_share)
+        .def_readwrite("penalized_cost_per_share", &VwapReport::penalized_cost_per_share)
+        .def_readwrite("n_buckets", &VwapReport::n_buckets)
+        .def_readwrite("bucket_interval", &VwapReport::bucket_interval)
+        .def_readwrite("forecast_total_mkt_vol", &VwapReport::forecast_total_mkt_vol);
+
     py::class_<SimStats>(m, "SimStats")
         .def(py::init<>())
         .def_readwrite("n_events", &SimStats::n_events)
@@ -110,4 +149,28 @@ PYBIND11_MODULE(lob_cpp, m){
     }, py::arg("n_events"));
 
     m.def("run_sim", &run_sim, py::arg("n_events"), py::arg("config"), py::arg("seed") = 0);
+    m.def(
+        "run_twap",
+        &run_twap,
+        py::arg("side"),
+        py::arg("total_qty"),
+        py::arg("horizon_events"),
+        py::arg("child_interval"),
+        py::arg("cfg"),
+        py::arg("seed") = 0,
+        py::arg("warmup_events") = 500,
+        py::arg("penalty_per_share") = 0.0
+    );
+    m.def(
+        "run_vwap",
+        &run_vwap,
+        py::arg("side"),
+        py::arg("total_qty"),
+        py::arg("horizon_events"),
+        py::arg("bucket_interval"),
+        py::arg("cfg"),
+        py::arg("seed") = 0,
+        py::arg("warmup_events") = 500,
+        py::arg("penalty_per_share") = 0.0
+    );
 }

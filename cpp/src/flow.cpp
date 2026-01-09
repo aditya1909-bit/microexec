@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <limits>
 
 void FlowConfig::validate() const {
     const double probs[3] = {p_limit, p_market, p_cancel};
@@ -16,14 +17,61 @@ void FlowConfig::validate() const {
     if (std::abs(sum - 1.0) > 1e-9) {
         throw std::invalid_argument("Event probabilities must sum to 1.0");
     }
+
+    // Basic parameter sanity checks
+    if (dt_us <= 0) {
+        throw std::invalid_argument("dt_us must be positive");
+    }
+    if (soft_max_orders < 0 || hard_max_orders < 0) {
+        throw std::invalid_argument("max order caps must be non-negative");
+    }
+    if (hard_max_orders <= soft_max_orders) {
+        throw std::invalid_argument("hard_max_orders must be > soft_max_orders");
+    }
+    if (min_offset <= 0 || max_offset <= 0) {
+        throw std::invalid_argument("offset bounds must be positive");
+    }
+    if (max_offset < min_offset) {
+        throw std::invalid_argument("max_offset must be >= min_offset");
+    }
+    if (offset_power <= 0.0 || !std::isfinite(offset_power)) {
+        throw std::invalid_argument("offset_power must be positive and finite");
+    }
+    if (min_qty <= 0 || max_qty <= 0 || max_qty < min_qty) {
+        throw std::invalid_argument("limit qty bounds must be positive and max_qty >= min_qty");
+    }
+    if (min_market_qty <= 0 || max_market_qty <= 0 || max_market_qty < min_market_qty) {
+        throw std::invalid_argument("market qty bounds must be positive and max_market_qty >= min_market_qty");
+    }
+    if (cancel_levels <= 0) {
+        throw std::invalid_argument("cancel_levels must be positive");
+    }
+    if (min_touch_qty < 0) {
+        throw std::invalid_argument("min_touch_qty must be non-negative");
+    }
+    if (!std::isfinite(cancel_boost) || cancel_boost < 0.0) {
+        throw std::invalid_argument("cancel_boost must be finite and non-negative");
+    }
 }
 
 PoissonOrderFlow::PoissonOrderFlow(const FlowConfig& config, int64_t seed)
     : config_(config),
       rng_(static_cast<uint32_t>(seed)),
       next_order_id_(1),
-      ref_mid_(config.initial_mid) {
+      ref_mid_(config.initial_mid),
+      offset_lo_(config.min_offset),
+      offset_hi_(config.max_offset) {
     config_.validate();
+
+    // Precompute offset distribution once for speed.
+    if (offset_hi_ > offset_lo_) {
+        std::vector<double> weights;
+        weights.reserve(static_cast<size_t>(offset_hi_ - offset_lo_ + 1));
+        for (int64_t k = offset_lo_; k <= offset_hi_; ++k) {
+            weights.push_back(1.0 / std::pow(static_cast<double>(k), config_.offset_power));
+        }
+        offset_dist_.emplace(weights.begin(), weights.end());
+    }
 }
 
 int64_t PoissonOrderFlow::mid_tick(const LimitOrderBook& book) const {
@@ -41,8 +89,8 @@ int64_t PoissonOrderFlow::new_order_id() {
 }
 
 EventKind PoissonOrderFlow::sample_event_kind(double p_limit, double p_market, double p_cancel) {
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
-    double r = dist(rng_);
+    (void)p_cancel; // p_cancel implied by remaining probability mass
+    double r = uni01_(rng_);
     if (r < p_limit) {
         return EventKind::Limit;
     }
@@ -53,19 +101,14 @@ EventKind PoissonOrderFlow::sample_event_kind(double p_limit, double p_market, d
 }
 
 int64_t PoissonOrderFlow::sample_offset() {
-    int64_t lo = config_.min_offset;
-    int64_t hi = config_.max_offset;
-    if (hi <= lo) {
-        return lo;
+    if (offset_hi_ <= offset_lo_) {
+        return offset_lo_;
     }
-    std::vector<double> weights;
-    weights.reserve(static_cast<size_t>(hi - lo + 1));
-    for (int64_t k = lo; k <= hi; ++k) {
-        weights.push_back(1.0 / std::pow(static_cast<double>(k), config_.offset_power));
+    if (offset_dist_.has_value()) {
+        int idx = (*offset_dist_)(rng_);
+        return offset_lo_ + static_cast<int64_t>(idx);
     }
-    std::discrete_distribution<int> dist(weights.begin(), weights.end());
-    int idx = dist(rng_);
-    return lo + idx;
+    return offset_lo_;
 }
 
 std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64_t ts) {
@@ -118,8 +161,7 @@ std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64
         } else if (!book.best_ask().has_value()) {
             side = Side::Ask;
         } else {
-            std::uniform_real_distribution<double> dist(0.0, 1.0);
-            side = (dist(rng_) < 0.5) ? Side::Bid : Side::Ask;
+            side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
         }
 
         int64_t offset = sample_offset();
@@ -152,8 +194,7 @@ std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64
             } else if (!book.best_ask().has_value()) {
                 side = Side::Ask;
             } else {
-                std::uniform_real_distribution<double> dist(0.0, 1.0);
-                side = (dist(rng_) < 0.5) ? Side::Bid : Side::Ask;
+                side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
             }
 
             int64_t offset = sample_offset();
@@ -172,13 +213,12 @@ std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64
 
         double im = book.imbalance(1);
         Side side = Side::Bid;
-        std::uniform_real_distribution<double> dist(0.0, 1.0);
         if (im > 0.2) {
-            side = (dist(rng_) < 0.75) ? Side::Ask : Side::Bid;
+            side = (uni01_(rng_) < 0.75) ? Side::Ask : Side::Bid;
         } else if (im < -0.2) {
-            side = (dist(rng_) < 0.75) ? Side::Bid : Side::Ask;
+            side = (uni01_(rng_) < 0.75) ? Side::Bid : Side::Ask;
         } else {
-            side = (dist(rng_) < 0.5) ? Side::Bid : Side::Ask;
+            side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
         }
 
         std::uniform_int_distribution<int64_t> qty_dist(config_.min_market_qty, config_.max_market_qty);
@@ -199,13 +239,12 @@ std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64
 
     double im = book.imbalance(1);
     Side side = Side::Bid;
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
     if (im > 0.2) {
-        side = (dist(rng_) < 0.75) ? Side::Bid : Side::Ask;
+        side = (uni01_(rng_) < 0.75) ? Side::Bid : Side::Ask;
     } else if (im < -0.2) {
-        side = (dist(rng_) < 0.75) ? Side::Ask : Side::Bid;
+        side = (uni01_(rng_) < 0.75) ? Side::Ask : Side::Bid;
     } else {
-        side = (dist(rng_) < 0.5) ? Side::Bid : Side::Ask;
+        side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
     }
 
     auto px_levels = book.depth(side, static_cast<int>(cancel_levels));
@@ -241,4 +280,31 @@ std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64
     }
 
     return {kind, 0};
+}
+
+std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t> PoissonOrderFlow::step_n(
+    LimitOrderBook& book,
+    int64_t start_ts,
+    int64_t n_events
+) {
+    int64_t n_limit = 0;
+    int64_t n_market = 0;
+    int64_t n_cancel = 0;
+    int64_t traded_qty = 0;
+    int64_t ts = start_ts;
+
+    for (int64_t i = 0; i < n_events; ++i) {
+        ts += config_.dt_us;
+        auto [kind, traded] = step(book, ts);
+        traded_qty += traded;
+        if (kind == EventKind::Limit) {
+            n_limit += 1;
+        } else if (kind == EventKind::Market) {
+            n_market += 1;
+        } else if (kind == EventKind::Cancel) {
+            n_cancel += 1;
+        }
+    }
+
+    return {ts, n_limit, n_market, n_cancel, traded_qty};
 }

@@ -148,8 +148,7 @@ bool LimitOrderBook::cancel(int64_t order_id, int64_t /*ts*/) {
         return false;
     }
 
-    Order order = it->second;
-    orders_.erase(it);
+    const Order order = it->second;
 
     if (order.side == Side::Bid) {
         auto book_it = bids_.find(order.px);
@@ -158,9 +157,10 @@ bool LimitOrderBook::cancel(int64_t order_id, int64_t /*ts*/) {
         }
         auto& queue = book_it->second;
         auto qit = std::find(queue.begin(), queue.end(), order_id);
-        if (qit != queue.end()) {
-            queue.erase(qit);
+        if (qit == queue.end()) {
+            return false;
         }
+        queue.erase(qit);
         if (queue.empty()) {
             bids_.erase(book_it);
         }
@@ -171,14 +171,17 @@ bool LimitOrderBook::cancel(int64_t order_id, int64_t /*ts*/) {
         }
         auto& queue = book_it->second;
         auto qit = std::find(queue.begin(), queue.end(), order_id);
-        if (qit != queue.end()) {
-            queue.erase(qit);
+        if (qit == queue.end()) {
+            return false;
         }
+        queue.erase(qit);
         if (queue.empty()) {
             asks_.erase(book_it);
         }
     }
 
+    // Only erase from orders_ after we successfully removed it from the book structure.
+    orders_.erase(it);
     return true;
 }
 
