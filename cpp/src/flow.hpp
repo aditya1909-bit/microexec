@@ -37,6 +37,8 @@ struct FlowConfig {
     int64_t min_touch_qty = 5;
 
     bool cancel_fallback_to_limit = true;
+    double p_ioc = 0.0;
+    double p_fok = 0.0;
 
     void validate() const;
 };
@@ -70,4 +72,35 @@ private:
     int64_t offset_lo_ = 1;
     int64_t offset_hi_ = 1;
     std::optional<std::discrete_distribution<int>> offset_dist_;
+};
+
+struct HawkesConfig {
+    FlowConfig base;
+    double alpha_limit = 0.15;
+    double alpha_market = 0.15;
+    double alpha_cancel = 0.10;
+    double decay = 10.0;
+};
+
+class HawkesOrderFlow {
+public:
+    explicit HawkesOrderFlow(const HawkesConfig& config, int64_t seed = 0);
+
+    std::pair<EventKind, int64_t> step(LimitOrderBook& book, int64_t ts);
+
+private:
+    OrderType sample_limit_type();
+    EventKind sample_kind(double lambda_limit, double lambda_market, double lambda_cancel);
+    int64_t sample_offset();
+    int64_t mid_tick(const LimitOrderBook& book) const;
+    int64_t new_order_id();
+
+    HawkesConfig config_;
+    std::mt19937 rng_;
+    int64_t next_order_id_ = 1;
+    int64_t ref_mid_ = 10000;
+    double lambda_limit_;
+    double lambda_market_;
+    double lambda_cancel_;
+    std::uniform_real_distribution<double> uni01_{0.0, 1.0};
 };

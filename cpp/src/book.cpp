@@ -95,6 +95,13 @@ double LimitOrderBook::imbalance(int levels) const {
 std::vector<Fill> LimitOrderBook::add_limit(Order order) {
     std::vector<Fill> fills;
 
+    if (order.order_type == OrderType::FOK) {
+        int64_t available = available_qty_for_limit(order);
+        if (available < order.qty) {
+            return fills;
+        }
+    }
+
     if (order.side == Side::Bid) {
         while (order.qty > 0 && best_ask().has_value() && order.px >= *best_ask()) {
             auto f = match(order, Side::Ask);
@@ -107,7 +114,7 @@ std::vector<Fill> LimitOrderBook::add_limit(Order order) {
         }
     }
 
-    if (order.qty > 0) {
+    if (order.qty > 0 && order.order_type == OrderType::Limit) {
         add_to_book(order);
     }
 
@@ -214,6 +221,42 @@ std::vector<int64_t> LimitOrderBook::order_ids_at_price(Side side, int64_t px) c
         ids.assign(it->second.begin(), it->second.end());
     }
     return ids;
+}
+
+int64_t LimitOrderBook::available_qty_for_limit(const Order& order) const {
+    int64_t total = 0;
+    if (order.side == Side::Bid) {
+        for (const auto& [px, queue] : asks_) {
+            if (px > order.px) {
+                break;
+            }
+            for (int64_t oid : queue) {
+                auto it = orders_.find(oid);
+                if (it != orders_.end()) {
+                    total += it->second.qty;
+                    if (total >= order.qty) {
+                        return total;
+                    }
+                }
+            }
+        }
+    } else {
+        for (const auto& [px, queue] : bids_) {
+            if (px < order.px) {
+                break;
+            }
+            for (int64_t oid : queue) {
+                auto it = orders_.find(oid);
+                if (it != orders_.end()) {
+                    total += it->second.qty;
+                    if (total >= order.qty) {
+                        return total;
+                    }
+                }
+            }
+        }
+    }
+    return total;
 }
 
 void LimitOrderBook::add_to_book(const Order& order) {

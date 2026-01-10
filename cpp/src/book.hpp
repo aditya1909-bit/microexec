@@ -9,7 +9,7 @@
 #include <vector>
 
 enum class Side { Bid, Ask };
-enum class OrderType { Limit, Market };
+enum class OrderType { Limit, Market, IOC, FOK };
 enum class Liquidity { Maker, Taker };
 
 struct Order {
@@ -54,6 +54,7 @@ private:
     std::map<int64_t, std::deque<int64_t>> asks_;
     std::unordered_map<int64_t, Order> orders_;
 
+    int64_t available_qty_for_limit(const Order& order) const;
     void add_to_book(const Order& order);
     std::vector<Fill> match(Order& incoming, Side resting_side);
 };

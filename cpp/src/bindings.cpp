@@ -18,6 +18,8 @@ PYBIND11_MODULE(lob_cpp, m){
     py::enum_<OrderType>(m, "OrderType")
         .value("LIMIT", OrderType::Limit)
         .value("MARKET", OrderType::Market)
+        .value("IOC", OrderType::IOC)
+        .value("FOK", OrderType::FOK)
         .export_values();
 
     py::enum_<Liquidity>(m, "Liquidity")
@@ -89,12 +91,26 @@ PYBIND11_MODULE(lob_cpp, m){
         .def_readwrite("max_market_qty", &FlowConfig::max_market_qty)
         .def_readwrite("min_touch_qty", &FlowConfig::min_touch_qty)
         .def_readwrite("cancel_fallback_to_limit", &FlowConfig::cancel_fallback_to_limit)
+        .def_readwrite("p_ioc", &FlowConfig::p_ioc)
+        .def_readwrite("p_fok", &FlowConfig::p_fok)
         .def("validate", &FlowConfig::validate);
 
     py::class_<PoissonOrderFlow>(m, "PoissonOrderFlow")
         .def(py::init<const FlowConfig&, int64_t>(), py::arg("config"), py::arg("seed") = 0)
         .def("step", &PoissonOrderFlow::step, py::arg("book"), py::arg("ts"))
         .def("step_n", &PoissonOrderFlow::step_n, py::arg("book"), py::arg("start_ts"), py::arg("n_events"));
+
+    py::class_<HawkesConfig>(m, "HawkesConfig")
+        .def(py::init<>())
+        .def_readwrite("base", &HawkesConfig::base)
+        .def_readwrite("alpha_limit", &HawkesConfig::alpha_limit)
+        .def_readwrite("alpha_market", &HawkesConfig::alpha_market)
+        .def_readwrite("alpha_cancel", &HawkesConfig::alpha_cancel)
+        .def_readwrite("decay", &HawkesConfig::decay);
+
+    py::class_<HawkesOrderFlow>(m, "HawkesOrderFlow")
+        .def(py::init<const HawkesConfig&, int64_t>(), py::arg("config"), py::arg("seed") = 0)
+        .def("step", &HawkesOrderFlow::step, py::arg("book"), py::arg("ts"));
 
     py::class_<TwapReport>(m, "TwapReport")
         .def_readwrite("side", &TwapReport::side)
@@ -129,6 +145,34 @@ PYBIND11_MODULE(lob_cpp, m){
         .def_readwrite("bucket_interval", &VwapReport::bucket_interval)
         .def_readwrite("forecast_total_mkt_vol", &VwapReport::forecast_total_mkt_vol);
 
+    py::class_<ImpactModel>(m, "ImpactModel")
+        .def(py::init<>())
+        .def_readwrite("temporary_impact", &ImpactModel::temporary_impact)
+        .def_readwrite("permanent_impact", &ImpactModel::permanent_impact)
+        .def_readwrite("volatility", &ImpactModel::volatility)
+        .def_readwrite("risk_aversion", &ImpactModel::risk_aversion);
+
+    py::class_<AlmgrenChrissReport>(m, "AlmgrenChrissReport")
+        .def_readwrite("side", &AlmgrenChrissReport::side)
+        .def_readwrite("target_qty", &AlmgrenChrissReport::target_qty)
+        .def_readwrite("filled_qty", &AlmgrenChrissReport::filled_qty)
+        .def_readwrite("avg_fill_px", &AlmgrenChrissReport::avg_fill_px)
+        .def_readwrite("arrival_mid", &AlmgrenChrissReport::arrival_mid)
+        .def_readwrite("shortfall", &AlmgrenChrissReport::shortfall)
+        .def_readwrite("n_child_orders", &AlmgrenChrissReport::n_child_orders)
+        .def_readwrite("unfilled_qty", &AlmgrenChrissReport::unfilled_qty)
+        .def_readwrite("completion_rate", &AlmgrenChrissReport::completion_rate)
+        .def_readwrite("risk_penalty", &AlmgrenChrissReport::risk_penalty)
+        .def_readwrite("objective", &AlmgrenChrissReport::objective)
+        .def_readwrite("shortfall_uncapped", &AlmgrenChrissReport::shortfall_uncapped)
+        .def_readwrite("objective_uncapped", &AlmgrenChrissReport::objective_uncapped)
+        .def_readwrite("cap_abs", &AlmgrenChrissReport::cap_abs)
+        .def_readwrite("cap_frac", &AlmgrenChrissReport::cap_frac)
+        .def_readwrite("cap_used", &AlmgrenChrissReport::cap_used)
+        .def_readwrite("capped", &AlmgrenChrissReport::capped)
+        .def_readwrite("child_qtys", &AlmgrenChrissReport::child_qtys)
+        .def_readwrite("impact", &AlmgrenChrissReport::impact);
+
     py::class_<SimStats>(m, "SimStats")
         .def(py::init<>())
         .def_readwrite("n_events", &SimStats::n_events)
@@ -157,6 +201,7 @@ PYBIND11_MODULE(lob_cpp, m){
         py::arg("horizon_events"),
         py::arg("child_interval"),
         py::arg("cfg"),
+        py::arg("latency_us") = 0,
         py::arg("seed") = 0,
         py::arg("warmup_events") = 500,
         py::arg("penalty_per_share") = 0.0
@@ -169,8 +214,24 @@ PYBIND11_MODULE(lob_cpp, m){
         py::arg("horizon_events"),
         py::arg("bucket_interval"),
         py::arg("cfg"),
+        py::arg("latency_us") = 0,
         py::arg("seed") = 0,
         py::arg("warmup_events") = 500,
         py::arg("penalty_per_share") = 0.0
+    );
+    m.def(
+        "run_almgren_chriss",
+        &run_almgren_chriss,
+        py::arg("side"),
+        py::arg("total_qty"),
+        py::arg("horizon_events"),
+        py::arg("child_interval"),
+        py::arg("cfg"),
+        py::arg("impact"),
+        py::arg("cap_abs") = 0,
+        py::arg("cap_frac") = 0.0,
+        py::arg("latency_us") = 0,
+        py::arg("seed") = 0,
+        py::arg("warmup_events") = 500
     );
 }

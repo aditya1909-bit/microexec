@@ -3,8 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <stdexcept>
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
 void FlowConfig::validate() const {
     const double probs[3] = {p_limit, p_market, p_cancel};
@@ -51,6 +52,12 @@ void FlowConfig::validate() const {
     }
     if (!std::isfinite(cancel_boost) || cancel_boost < 0.0) {
         throw std::invalid_argument("cancel_boost must be finite and non-negative");
+    }
+    if (p_ioc < 0.0 || p_fok < 0.0 || p_ioc > 1.0 || p_fok > 1.0) {
+        throw std::invalid_argument("IOC/FOK probabilities must be in [0,1]");
+    }
+    if (p_ioc + p_fok > 1.0) {
+        throw std::invalid_argument("IOC/FOK probabilities must sum to <= 1.0");
     }
 }
 
@@ -170,8 +177,15 @@ std::pair<EventKind, int64_t> PoissonOrderFlow::step(LimitOrderBook& book, int64
 
         int64_t px = (side == Side::Bid) ? (mid - offset) : (mid + offset);
         int64_t oid = new_order_id();
+        OrderType order_type = OrderType::Limit;
+        double r = uni01_(rng_);
+        if (r < config_.p_ioc) {
+            order_type = OrderType::IOC;
+        } else if (r < config_.p_ioc + config_.p_fok) {
+            order_type = OrderType::FOK;
+        }
 
-        auto fills = book.add_limit(Order{oid, side, px, qty, ts});
+        auto fills = book.add_limit(Order{oid, side, px, qty, ts, "SIM", order_type});
         int64_t traded = 0;
         for (const auto& f : fills) {
             traded += f.qty;
@@ -307,4 +321,206 @@ std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t> PoissonOrderFlow::step_n
     }
 
     return {ts, n_limit, n_market, n_cancel, traded_qty};
+}
+
+HawkesOrderFlow::HawkesOrderFlow(const HawkesConfig& config, int64_t seed)
+    : config_(config),
+      rng_(static_cast<uint32_t>(seed)),
+      next_order_id_(1),
+      ref_mid_(config.base.initial_mid),
+      lambda_limit_(config.base.p_limit),
+      lambda_market_(config.base.p_market),
+      lambda_cancel_(config.base.p_cancel) {
+    config_.base.validate();
+}
+
+OrderType HawkesOrderFlow::sample_limit_type() {
+    double r = uni01_(rng_);
+    if (r < config_.base.p_ioc) {
+        return OrderType::IOC;
+    }
+    if (r < config_.base.p_ioc + config_.base.p_fok) {
+        return OrderType::FOK;
+    }
+    return OrderType::Limit;
+}
+
+EventKind HawkesOrderFlow::sample_kind(double lambda_limit, double lambda_market, double lambda_cancel) {
+    double total = lambda_limit + lambda_market + lambda_cancel;
+    if (total <= 0.0) {
+        return EventKind::Limit;
+    }
+    double r = uni01_(rng_) * total;
+    if (r < lambda_limit) {
+        return EventKind::Limit;
+    }
+    if (r < lambda_limit + lambda_market) {
+        return EventKind::Market;
+    }
+    return EventKind::Cancel;
+}
+
+int64_t HawkesOrderFlow::sample_offset() {
+    int64_t lo = config_.base.min_offset;
+    int64_t hi = config_.base.max_offset;
+    if (hi <= lo) {
+        return lo;
+    }
+    std::vector<double> weights;
+    weights.reserve(static_cast<size_t>(hi - lo + 1));
+    for (int64_t k = lo; k <= hi; ++k) {
+        weights.push_back(1.0 / std::pow(static_cast<double>(k), config_.base.offset_power));
+    }
+    std::discrete_distribution<int> dist(weights.begin(), weights.end());
+    int idx = dist(rng_);
+    return lo + idx;
+}
+
+int64_t HawkesOrderFlow::mid_tick(const LimitOrderBook& book) const {
+    auto m = book.mid();
+    if (!m.has_value()) {
+        return ref_mid_;
+    }
+    return static_cast<int64_t>(std::llround(*m));
+}
+
+int64_t HawkesOrderFlow::new_order_id() {
+    int64_t oid = next_order_id_;
+    next_order_id_ += 1;
+    return oid;
+}
+
+std::pair<EventKind, int64_t> HawkesOrderFlow::step(LimitOrderBook& book, int64_t ts) {
+    double dt = static_cast<double>(config_.base.dt_us) / 1'000'000.0;
+    double decay = std::exp(-config_.decay * dt);
+    lambda_limit_ = config_.base.p_limit + (lambda_limit_ - config_.base.p_limit) * decay;
+    lambda_market_ = config_.base.p_market + (lambda_market_ - config_.base.p_market) * decay;
+    lambda_cancel_ = config_.base.p_cancel + (lambda_cancel_ - config_.base.p_cancel) * decay;
+
+    EventKind kind = sample_kind(lambda_limit_, lambda_market_, lambda_cancel_);
+
+    if (!book.best_bid().has_value() || !book.best_ask().has_value()) {
+        kind = EventKind::Limit;
+    } else {
+        auto bid_touch = book.depth(Side::Bid, 1);
+        auto ask_touch = book.depth(Side::Ask, 1);
+        int64_t bid_q = bid_touch.empty() ? 0 : bid_touch[0].second;
+        int64_t ask_q = ask_touch.empty() ? 0 : ask_touch[0].second;
+        if (bid_q < config_.base.min_touch_qty || ask_q < config_.base.min_touch_qty) {
+            kind = EventKind::Limit;
+        }
+    }
+
+    if (kind == EventKind::Cancel && book.order_count() == 0) {
+        if (config_.base.cancel_fallback_to_limit) {
+            kind = EventKind::Limit;
+        } else {
+            return {kind, 0};
+        }
+    }
+
+    if (kind == EventKind::Limit) {
+        int64_t mid = mid_tick(book);
+        Side side = Side::Bid;
+        if (!book.best_bid().has_value() && !book.best_ask().has_value()) {
+            side = ((ts / config_.base.dt_us) % 2 == 0) ? Side::Bid : Side::Ask;
+        } else if (!book.best_bid().has_value()) {
+            side = Side::Bid;
+        } else if (!book.best_ask().has_value()) {
+            side = Side::Ask;
+        } else {
+            side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
+        }
+
+        int64_t offset = sample_offset();
+        std::uniform_int_distribution<int64_t> qty_dist(config_.base.min_qty, config_.base.max_qty);
+        int64_t qty = qty_dist(rng_);
+        int64_t px = (side == Side::Bid) ? (mid - offset) : (mid + offset);
+        int64_t oid = new_order_id();
+        OrderType order_type = sample_limit_type();
+
+        auto fills = book.add_limit(Order{oid, side, px, qty, ts, "SIM", order_type});
+        int64_t traded = 0;
+        for (const auto& f : fills) {
+            traded += f.qty;
+        }
+
+        lambda_limit_ += config_.alpha_limit;
+        return {kind, traded};
+    }
+
+    if (kind == EventKind::Market) {
+        double im = book.imbalance(1);
+        Side side = Side::Bid;
+        if (im > 0.2) {
+            side = (uni01_(rng_) < 0.75) ? Side::Ask : Side::Bid;
+        } else if (im < -0.2) {
+            side = (uni01_(rng_) < 0.75) ? Side::Bid : Side::Ask;
+        } else {
+            side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
+        }
+
+        std::uniform_int_distribution<int64_t> qty_dist(config_.base.min_market_qty, config_.base.max_market_qty);
+        int64_t qty = qty_dist(rng_);
+
+        auto fills = book.add_market(side, qty, ts);
+        int64_t traded = 0;
+        for (const auto& f : fills) {
+            traded += f.qty;
+        }
+
+        lambda_market_ += config_.alpha_market;
+        return {kind, traded};
+    }
+
+    int64_t cancel_levels = config_.base.cancel_levels;
+    if (book.order_count() == 0) {
+        return {EventKind::Limit, 0};
+    }
+
+    double im = book.imbalance(1);
+    Side side = Side::Bid;
+    if (im > 0.2) {
+        side = (uni01_(rng_) < 0.75) ? Side::Bid : Side::Ask;
+    } else if (im < -0.2) {
+        side = (uni01_(rng_) < 0.75) ? Side::Ask : Side::Bid;
+    } else {
+        side = (uni01_(rng_) < 0.5) ? Side::Bid : Side::Ask;
+    }
+
+    auto px_levels = book.depth(side, static_cast<int>(cancel_levels));
+    if (px_levels.empty()) {
+        side = (side == Side::Bid) ? Side::Ask : Side::Bid;
+        px_levels = book.depth(side, static_cast<int>(cancel_levels));
+    }
+
+    if (!px_levels.empty()) {
+        std::vector<double> weights;
+        weights.reserve(px_levels.size());
+        for (const auto& level : px_levels) {
+            weights.push_back(static_cast<double>(std::max<int64_t>(1, level.second)));
+        }
+        std::discrete_distribution<int> price_dist(weights.begin(), weights.end());
+        int idx = price_dist(rng_);
+        int64_t px = px_levels[static_cast<size_t>(idx)].first;
+
+        auto ids = book.order_ids_at_price(side, px);
+        if (!ids.empty()) {
+            std::uniform_int_distribution<size_t> id_dist(0, ids.size() - 1);
+            int64_t oid = ids[id_dist(rng_)];
+            book.cancel(oid, ts);
+            lambda_cancel_ += config_.alpha_cancel;
+            return {kind, 0};
+        }
+    }
+
+    auto ids = book.all_order_ids();
+    if (!ids.empty()) {
+        std::uniform_int_distribution<size_t> id_dist(0, ids.size() - 1);
+        int64_t oid = ids[id_dist(rng_)];
+        book.cancel(oid, ts);
+    }
+
+    lambda_cancel_ += config_.alpha_cancel;
+    return {kind, 0};
 }
