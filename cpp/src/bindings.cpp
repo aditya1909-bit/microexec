@@ -33,6 +33,12 @@ PYBIND11_MODULE(lob_cpp, m){
         .value("CANCEL", EventKind::Cancel)
         .export_values();
 
+    py::enum_<HistoricalFormat>(m, "HistoricalFormat")
+        .value("BINARY", HistoricalFormat::Binary)
+        .value("CSV", HistoricalFormat::Csv)
+        .value("TRUEFX", HistoricalFormat::TrueFX)
+        .export_values();
+
     py::class_<Order>(m, "Order")
         .def(
             py::init<int64_t, Side, int64_t, int64_t, int64_t, std::string, OrderType>(),
@@ -111,6 +117,23 @@ PYBIND11_MODULE(lob_cpp, m){
     py::class_<HawkesOrderFlow>(m, "HawkesOrderFlow")
         .def(py::init<const HawkesConfig&, int64_t>(), py::arg("config"), py::arg("seed") = 0)
         .def("step", &HawkesOrderFlow::step, py::arg("book"), py::arg("ts"));
+
+    py::class_<HistoricalOrderFlow>(m, "HistoricalOrderFlow")
+        .def(
+            py::init<const std::string&, HistoricalFormat, int64_t, int64_t, int64_t>(),
+            py::arg("path"),
+            py::arg("format"),
+            py::arg("start_order_id") = 1,
+            py::arg("fixed_qty") = 1'000'000,
+            py::arg("price_scale") = 100'000
+        )
+        .def("done", &HistoricalOrderFlow::done)
+        .def("step", [](HistoricalOrderFlow& flow, LimitOrderBook& book) {
+            int64_t ts = 0;
+            int64_t traded = 0;
+            bool ok = flow.step(book, ts, traded);
+            return py::make_tuple(ok, ts, traded);
+        });
 
     py::class_<TwapReport>(m, "TwapReport")
         .def_readwrite("side", &TwapReport::side)

@@ -19,3 +19,6 @@ env/
 
 #cpp
 cpp/build/
+
+#data
+data/

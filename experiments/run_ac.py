@@ -4,6 +4,7 @@ from statistics import mean, pstdev
 from sim.flow import FlowConfig, PoissonOrderFlow, Side
 from sim.execution.almgren_chriss import ImpactModel, run_almgren_chriss
 from lob._cpp import lob_cpp
+from experiments.progress import progress_bar
 
 
 if __name__ == "__main__":
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     cap_frac = 0.05
 
     print("=== Almgren-Chriss lambda sweep ===")
-    for lam in lambdas:
+    for idx, lam in enumerate(lambdas, start=1):
         impact = ImpactModel(
             temporary_impact=base_impact.temporary_impact,
             permanent_impact=base_impact.permanent_impact,
@@ -50,6 +51,7 @@ if __name__ == "__main__":
         print(f"lambda={lam:g} filled={rep.filled_qty} avg_px={rep.avg_fill_px}")
         print(f"  shortfall={rep.shortfall} risk_penalty={rep.risk_penalty} objective={rep.objective}")
         print(f"  child_orders={rep.n_child_orders} first5={rep.child_qtys[:5]}")
+        progress_bar(idx, len(lambdas), prefix="ac_lambda")
 
     # Plot schedules (uncapped)
     out_dir = Path(__file__).resolve().parent / "out"
@@ -63,7 +65,7 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     plt.figure()
-    for lam in plot_lambdas:
+    for idx, lam in enumerate(plot_lambdas, start=1):
         impact = ImpactModel(
             temporary_impact=base_impact.temporary_impact,
             permanent_impact=base_impact.permanent_impact,
@@ -82,6 +84,7 @@ if __name__ == "__main__":
         )
         xs = [i * dt_seconds for i in range(len(rep.child_qtys))]
         plt.plot(xs, rep.child_qtys, label=f"λ={lam:g}")
+        progress_bar(idx, len(plot_lambdas), prefix="ac_plot_uncapped")
 
     plt.xlabel("t (seconds)")
     plt.ylabel("q_t (shares)")
@@ -92,7 +95,7 @@ if __name__ == "__main__":
 
     # Cap + objective change
     print("=== Per-slice cap impact ===")
-    for lam in (0.0, 1e-3, 1e-2):
+    for idx, lam in enumerate((0.0, 1e-3, 1e-2), start=1):
         impact = ImpactModel(
             temporary_impact=base_impact.temporary_impact,
             permanent_impact=base_impact.permanent_impact,
@@ -115,9 +118,10 @@ if __name__ == "__main__":
             f"lambda={lam:g} cap_used={rep_capped.cap_used} "
             f"objective_uncapped={rep_capped.objective_uncapped} objective_capped={rep_capped.objective}"
         )
+        progress_bar(idx, 3, prefix="ac_cap")
 
     plt.figure()
-    for lam in plot_lambdas:
+    for idx, lam in enumerate(plot_lambdas, start=1):
         impact = ImpactModel(
             temporary_impact=base_impact.temporary_impact,
             permanent_impact=base_impact.permanent_impact,
@@ -138,6 +142,7 @@ if __name__ == "__main__":
         )
         xs = [i * dt_seconds for i in range(len(rep.child_qtys))]
         plt.plot(xs, rep.child_qtys, label=f"λ={lam:g}")
+        progress_bar(idx, len(plot_lambdas), prefix="ac_plot_capped")
 
     plt.xlabel("t (seconds)")
     plt.ylabel("q_t (shares)")
@@ -321,7 +326,7 @@ if __name__ == "__main__":
         )
         return list(rep.child_qtys)
 
-    for lam in compare_lambdas:
+    for idx_lam, lam in enumerate(compare_lambdas, start=1):
         ac_shortfalls = []
         ac_objectives = []
         twap_shortfalls = []
@@ -377,10 +382,11 @@ if __name__ == "__main__":
         print(f"  TWAP shortfall={_fmt(twap_sf_m, twap_sf_s)} objective={_fmt(twap_obj_m, twap_obj_s)}")
         print(f"  VWAP shortfall={_fmt(vwap_sf_m, vwap_sf_s)} objective={_fmt(vwap_obj_m, vwap_obj_s)}")
         print(f"  POV  shortfall={_fmt(pov_sf_m, pov_sf_s)} objective={_fmt(pov_obj_m, pov_obj_s)}")
+        progress_bar(idx_lam, len(compare_lambdas), prefix="ac_compare")
 
     # Efficient frontier: std(shortfall) vs mean(shortfall)
     ac_frontier = []
-    for lam in lambdas:
+    for idx, lam in enumerate(lambdas, start=1):
         ac_schedule = _ac_schedule(lam)
         sfs = []
         for s in seeds:
@@ -390,9 +396,10 @@ if __name__ == "__main__":
         m, sdev = _mean_std(sfs)
         if m is not None and sdev is not None:
             ac_frontier.append((lam, m, sdev))
+        progress_bar(idx, len(lambdas), prefix="ac_frontier")
 
     ac_frontier_capped = []
-    for lam in lambdas:
+    for idx, lam in enumerate(lambdas, start=1):
         ac_schedule = _ac_schedule_capped(lam)
         sfs = []
         for s in seeds:
@@ -402,6 +409,7 @@ if __name__ == "__main__":
         m, sdev = _mean_std(sfs)
         if m is not None and sdev is not None:
             ac_frontier_capped.append((lam, m, sdev))
+        progress_bar(idx, len(lambdas), prefix="ac_frontier_capped")
 
     twap_schedule = _twap_schedule()
     twap_sfs = []

@@ -7,6 +7,7 @@ from pathlib import Path
 from statistics import mean, pstdev
 
 from joblib import Parallel, delayed
+from experiments.progress import progress_bar
 
 from sim.flow import FlowConfig, Side
 from sim.execution.twap import run_twap
@@ -71,13 +72,6 @@ def _run_one(seed: int, total_qty: int, child_interval: int, penalty_per_share: 
     return d
 
 
-def _run_chunk(chunk: list[tuple[int, int, int, float]], horizon_events: int, warmup_events: int) -> list[dict]:
-    out = []
-    for seed, total_qty, child_interval, penalty_per_share in chunk:
-        out.append(_run_one(seed, total_qty, child_interval, penalty_per_share, horizon_events, warmup_events))
-    return out
-
-
 if __name__ == "__main__":
     # Sweep parameters
     total_qty_grid = [250, 500, 1000, 2000]
@@ -102,10 +96,15 @@ if __name__ == "__main__":
     chunk_size = max(1, len(tasks) // (cpu * 4))
     chunks = [tasks[i : i + chunk_size] for i in range(0, len(tasks), chunk_size)]
 
-    rows = Parallel(n_jobs=-1, prefer="processes")(
-        delayed(_run_chunk)(chunk, horizon_events, warmup_events) for chunk in chunks
-    )
-    rows = [r for chunk in rows for r in chunk]
+    rows = []
+    total_chunks = len(chunks)
+    for idx, chunk in enumerate(chunks, start=1):
+        rows_chunk = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(_run_one)(seed, total_qty, child_interval, penalty_per_share, horizon_events, warmup_events)
+            for seed, total_qty, child_interval, penalty_per_share in chunk
+        )
+        rows.extend(rows_chunk)
+        progress_bar(idx, total_chunks, prefix="twap")
 
     #Aggregate by (total_qty, child_interval, penalty_per_share)
     grouped: dict[tuple[int, int, float], list[dict]] = {}

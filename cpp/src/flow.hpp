@@ -2,14 +2,18 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <fstream>
+#include <optional>
 #include <random>
+#include <string>
 #include <tuple>
 #include <vector>
-#include <optional>
 
 #include "book.hpp"
 
 enum class EventKind { Limit, Market, Cancel };
+enum class HistoricalFormat { Binary, Csv, TrueFX };
 
 struct FlowConfig {
     int64_t initial_mid = 10000;
@@ -103,4 +107,37 @@ private:
     double lambda_market_;
     double lambda_cancel_;
     std::uniform_real_distribution<double> uni01_{0.0, 1.0};
+};
+
+class HistoricalOrderFlow {
+public:
+    HistoricalOrderFlow(
+        const std::string& path,
+        HistoricalFormat format,
+        int64_t start_order_id = 1,
+        int64_t fixed_qty = 1'000'000,
+        int64_t price_scale = 100'000
+    );
+    ~HistoricalOrderFlow();
+
+    bool step(LimitOrderBook& book, int64_t& ts_out, int64_t& traded_out);
+    bool done() const;
+
+private:
+    bool read_next_tick(int64_t& ts, Side& side, int64_t& px, int64_t& qty);
+
+    HistoricalFormat format_;
+    int64_t next_order_id_;
+    bool done_ = false;
+    int64_t fixed_qty_ = 1'000'000;
+    int64_t price_scale_ = 100'000;
+    int64_t lp_bid_id_ = 0;
+    int64_t lp_ask_id_ = 0;
+
+    int fd_ = -1;
+    const uint8_t* map_ = nullptr;
+    size_t map_size_ = 0;
+    size_t map_index_ = 0;
+
+    std::ifstream csv_;
 };

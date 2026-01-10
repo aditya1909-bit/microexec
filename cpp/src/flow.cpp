@@ -2,10 +2,199 @@
 #include "flow.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cctype>
+#include <ctime>
+#include <cstdlib>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+namespace {
+
+constexpr size_t kBinaryTickFields = 4;
+
+std::string trim_ascii(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start])) != 0) {
+        start += 1;
+    }
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1])) != 0) {
+        end -= 1;
+    }
+    return s.substr(start, end - start);
+}
+
+bool parse_int64(const std::string& token, int64_t& out) {
+    const std::string trimmed = trim_ascii(token);
+    if (trimmed.empty()) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    long long val = std::strtoll(trimmed.c_str(), &end, 10);
+    if (errno != 0 || end == trimmed.c_str() || *end != '\0') {
+        return false;
+    }
+    out = static_cast<int64_t>(val);
+    return true;
+}
+
+Side parse_side_token(const std::string& token) {
+    std::string t = trim_ascii(token);
+    std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    if (t == "BID" || t == "B" || t == "1") {
+        return Side::Bid;
+    }
+    if (t == "ASK" || t == "A" || t == "-1") {
+        return Side::Ask;
+    }
+    int64_t side_num = 0;
+    if (parse_int64(t, side_num)) {
+        return side_num >= 0 ? Side::Bid : Side::Ask;
+    }
+    throw std::invalid_argument("Unknown side token: " + token);
+}
+
+bool parse_csv_tick(
+    const std::string& line,
+    int64_t& ts,
+    Side& side,
+    int64_t& px,
+    int64_t& qty
+) {
+    if (line.empty()) {
+        return false;
+    }
+    if (line[0] == '#') {
+        return false;
+    }
+    std::stringstream ss(line);
+    std::string token;
+    std::vector<std::string> tokens;
+    while (std::getline(ss, token, ',')) {
+        tokens.push_back(token);
+    }
+    if (tokens.size() < 4) {
+        return false;
+    }
+    int64_t ts_val = 0;
+    if (!parse_int64(tokens[0], ts_val)) {
+        for (unsigned char c : tokens[0]) {
+            if (std::isalpha(c) != 0) {
+                return false;
+            }
+        }
+        throw std::invalid_argument("Invalid CSV ts value: " + tokens[0]);
+    }
+    ts = ts_val;
+    side = parse_side_token(tokens[1]);
+    if (!parse_int64(tokens[2], px) || !parse_int64(tokens[3], qty)) {
+        throw std::invalid_argument("Invalid CSV px/qty value");
+    }
+    return true;
+}
+
+bool parse_fixed_int(const std::string& s, size_t pos, size_t len, int& out) {
+    if (pos + len > s.size()) {
+        return false;
+    }
+    int val = 0;
+    for (size_t i = 0; i < len; ++i) {
+        char c = s[pos + i];
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        val = val * 10 + (c - '0');
+    }
+    out = val;
+    return true;
+}
+
+int64_t parse_truefx_ts_us(const std::string& token) {
+    const std::string s = trim_ascii(token);
+    int year = 0;
+    int mon = 0;
+    int day = 0;
+    int hour = 0;
+    int min = 0;
+    int sec = 0;
+    int msec = 0;
+    if (
+        !parse_fixed_int(s, 0, 4, year) ||
+        !parse_fixed_int(s, 4, 2, mon) ||
+        !parse_fixed_int(s, 6, 2, day) ||
+        s.size() < 21 ||
+        !parse_fixed_int(s, 9, 2, hour) ||
+        !parse_fixed_int(s, 12, 2, min) ||
+        !parse_fixed_int(s, 15, 2, sec) ||
+        !parse_fixed_int(s, 18, 3, msec)
+    ) {
+        throw std::invalid_argument("Invalid TrueFX timestamp: " + token);
+    }
+
+    std::tm tm{};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = mon - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = min;
+    tm.tm_sec = sec;
+    tm.tm_isdst = 0;
+
+    time_t epoch = timegm(&tm);
+    if (epoch == static_cast<time_t>(-1)) {
+        throw std::invalid_argument("Failed to convert TrueFX timestamp: " + token);
+    }
+
+    return static_cast<int64_t>(epoch) * 1'000'000 + static_cast<int64_t>(msec) * 1'000;
+}
+
+bool parse_truefx_line(
+    const std::string& line,
+    int64_t& ts,
+    int64_t& bid_px,
+    int64_t& ask_px,
+    int64_t price_scale
+) {
+    if (line.empty()) {
+        return false;
+    }
+    if (line[0] == '#') {
+        return false;
+    }
+    std::stringstream ss(line);
+    std::string token;
+    std::vector<std::string> tokens;
+    while (std::getline(ss, token, ',')) {
+        tokens.push_back(token);
+    }
+    if (tokens.size() < 4) {
+        return false;
+    }
+
+    ts = parse_truefx_ts_us(tokens[1]);
+    double bid = std::stod(trim_ascii(tokens[2]));
+    double ask = std::stod(trim_ascii(tokens[3]));
+    if (!std::isfinite(bid) || !std::isfinite(ask)) {
+        throw std::invalid_argument("Invalid TrueFX price values");
+    }
+    bid_px = static_cast<int64_t>(std::llround(bid * static_cast<double>(price_scale)));
+    ask_px = static_cast<int64_t>(std::llround(ask * static_cast<double>(price_scale)));
+    return true;
+}
+
+}  // namespace
 
 void FlowConfig::validate() const {
     const double probs[3] = {p_limit, p_market, p_cancel};
@@ -523,4 +712,187 @@ std::pair<EventKind, int64_t> HawkesOrderFlow::step(LimitOrderBook& book, int64_
 
     lambda_cancel_ += config_.alpha_cancel;
     return {kind, 0};
+}
+
+HistoricalOrderFlow::HistoricalOrderFlow(
+    const std::string& path,
+    HistoricalFormat format,
+    int64_t start_order_id,
+    int64_t fixed_qty,
+    int64_t price_scale
+) : format_(format),
+    next_order_id_(start_order_id),
+    fixed_qty_(fixed_qty),
+    price_scale_(price_scale) {
+    if (start_order_id <= 0) {
+        throw std::invalid_argument("start_order_id must be > 0");
+    }
+    if (fixed_qty_ <= 0) {
+        throw std::invalid_argument("fixed_qty must be > 0");
+    }
+    if (price_scale_ <= 0) {
+        throw std::invalid_argument("price_scale must be > 0");
+    }
+    if (format_ == HistoricalFormat::Binary) {
+        fd_ = ::open(path.c_str(), O_RDONLY);
+        if (fd_ < 0) {
+            throw std::runtime_error("Failed to open binary tick file: " + path);
+        }
+        struct stat st;
+        if (::fstat(fd_, &st) != 0) {
+            ::close(fd_);
+            fd_ = -1;
+            throw std::runtime_error("Failed to stat binary tick file: " + path);
+        }
+        if (st.st_size <= 0) {
+            ::close(fd_);
+            fd_ = -1;
+            throw std::invalid_argument("Binary tick file is empty: " + path);
+        }
+        map_size_ = static_cast<size_t>(st.st_size);
+        size_t record_size = sizeof(int64_t) * kBinaryTickFields;
+        if (map_size_ % record_size != 0) {
+            ::close(fd_);
+            fd_ = -1;
+            throw std::invalid_argument("Binary tick file size is not a multiple of record size");
+        }
+        void* mapped = ::mmap(nullptr, map_size_, PROT_READ, MAP_SHARED, fd_, 0);
+        if (mapped == MAP_FAILED) {
+            ::close(fd_);
+            fd_ = -1;
+            throw std::runtime_error("Failed to mmap binary tick file");
+        }
+        map_ = static_cast<const uint8_t*>(mapped);
+        map_index_ = 0;
+    } else {
+        csv_.open(path);
+        if (!csv_) {
+            throw std::runtime_error("Failed to open CSV tick file: " + path);
+        }
+    }
+}
+
+HistoricalOrderFlow::~HistoricalOrderFlow() {
+    if (map_ != nullptr && map_ != reinterpret_cast<const uint8_t*>(MAP_FAILED)) {
+        ::munmap(const_cast<uint8_t*>(map_), map_size_);
+        map_ = nullptr;
+        map_size_ = 0;
+    }
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+    if (csv_.is_open()) {
+        csv_.close();
+    }
+}
+
+bool HistoricalOrderFlow::done() const {
+    return done_;
+}
+
+bool HistoricalOrderFlow::read_next_tick(int64_t& ts, Side& side, int64_t& px, int64_t& qty) {
+    if (done_) {
+        return false;
+    }
+    if (format_ == HistoricalFormat::Binary) {
+        size_t record_size = sizeof(int64_t) * kBinaryTickFields;
+        size_t total_records = map_size_ / record_size;
+        if (map_index_ >= total_records) {
+            done_ = true;
+            return false;
+        }
+        const int64_t* data = reinterpret_cast<const int64_t*>(map_);
+        size_t offset = map_index_ * kBinaryTickFields;
+        ts = data[offset];
+        int64_t side_val = data[offset + 1];
+        px = data[offset + 2];
+        qty = data[offset + 3];
+        side = side_val >= 0 ? Side::Bid : Side::Ask;
+        map_index_ += 1;
+        return true;
+    }
+
+    std::string line;
+    while (std::getline(csv_, line)) {
+        int64_t ts_val = 0;
+        Side side_val = Side::Bid;
+        int64_t px_val = 0;
+        int64_t qty_val = 0;
+        if (!parse_csv_tick(line, ts_val, side_val, px_val, qty_val)) {
+            continue;
+        }
+        ts = ts_val;
+        side = side_val;
+        px = px_val;
+        qty = qty_val;
+        return true;
+    }
+    done_ = true;
+    return false;
+}
+
+bool HistoricalOrderFlow::step(LimitOrderBook& book, int64_t& ts_out, int64_t& traded_out) {
+    if (format_ == HistoricalFormat::TrueFX) {
+        if (done_) {
+            return false;
+        }
+        std::string line;
+        int64_t ts = 0;
+        int64_t bid_px = 0;
+        int64_t ask_px = 0;
+        bool parsed = false;
+        while (std::getline(csv_, line)) {
+            if (parse_truefx_line(line, ts, bid_px, ask_px, price_scale_)) {
+                parsed = true;
+                break;
+            }
+        }
+        if (!parsed) {
+            done_ = true;
+            return false;
+        }
+
+        if (lp_bid_id_ > 0) {
+            book.cancel(lp_bid_id_, ts);
+        }
+        if (lp_ask_id_ > 0) {
+            book.cancel(lp_ask_id_, ts);
+        }
+
+        int64_t bid_id = next_order_id_++;
+        int64_t ask_id = next_order_id_++;
+        auto bid_fills = book.add_limit(Order{bid_id, Side::Bid, bid_px, fixed_qty_, ts, "LP", OrderType::Limit});
+        auto ask_fills = book.add_limit(Order{ask_id, Side::Ask, ask_px, fixed_qty_, ts, "LP", OrderType::Limit});
+        int64_t traded = 0;
+        for (const auto& f : bid_fills) {
+            traded += f.qty;
+        }
+        for (const auto& f : ask_fills) {
+            traded += f.qty;
+        }
+        lp_bid_id_ = bid_id;
+        lp_ask_id_ = ask_id;
+        ts_out = ts;
+        traded_out = traded;
+        return true;
+    }
+
+    int64_t ts = 0;
+    Side side = Side::Bid;
+    int64_t px = 0;
+    int64_t qty = 0;
+    if (!read_next_tick(ts, side, px, qty)) {
+        return false;
+    }
+
+    int64_t traded = 0;
+    int64_t oid = next_order_id_++;
+    auto fills = book.add_limit(Order{oid, side, px, qty, ts, "HIST", OrderType::Limit});
+    for (const auto& f : fills) {
+        traded += f.qty;
+    }
+    ts_out = ts;
+    traded_out = traded;
+    return true;
 }

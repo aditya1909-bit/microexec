@@ -3,7 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <deque>
+#include <queue>
 #include <stdexcept>
 
 namespace {
@@ -339,24 +339,30 @@ std::pair<LimitOrderBook, TwapReport> run_twap(
 
     int64_t n_slices = std::max<int64_t>(1, (horizon_events + child_interval - 1) / child_interval);
     Side side_enum = parse_side(side);
-    int64_t latency_events = 0;
-    if (latency_us > 0 && cfg.dt_us > 0) {
-        latency_events = (latency_us + cfg.dt_us - 1) / cfg.dt_us;
-    }
-    struct PendingOrder {
-        int64_t due_i;
+    struct PendingEvent {
+        int64_t due_ts;
         int64_t qty;
+        int64_t seq;
     };
-    std::deque<PendingOrder> pending;
+    struct PendingEventCmp {
+        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            if (a.due_ts != b.due_ts) {
+                return a.due_ts > b.due_ts;
+            }
+            return a.seq > b.seq;
+        }
+    };
+    std::priority_queue<PendingEvent, std::vector<PendingEvent>, PendingEventCmp> pending;
+    int64_t pending_seq = 0;
 
     for (int64_t i = 0; i < horizon_events; ++i) {
         ts += cfg.dt_us;
 
         flow.step(book, ts);
 
-        while (!pending.empty() && pending.front().due_i <= i) {
-            int64_t qty = pending.front().qty;
-            pending.pop_front();
+        while (!pending.empty() && pending.top().due_ts <= ts) {
+            int64_t qty = pending.top().qty;
+            pending.pop();
             if (qty <= 0) {
                 continue;
             }
@@ -372,14 +378,15 @@ std::pair<LimitOrderBook, TwapReport> run_twap(
             int64_t child_qty = (remaining + slices_left - 1) / slices_left;
 
             n_child += 1;
-            if (latency_events == 0) {
+            if (latency_us <= 0) {
                 auto fills = book.add_market(side_enum, child_qty, ts);
                 for (const auto& f : fills) {
                     filled_qty += f.qty;
                     notional += f.qty * f.px;
                 }
             } else {
-                pending.push_back(PendingOrder{i + latency_events, child_qty});
+                pending.push(PendingEvent{ts + latency_us, child_qty, pending_seq});
+                pending_seq += 1;
             }
 
             remaining = total_qty - filled_qty;
@@ -484,24 +491,30 @@ std::pair<LimitOrderBook, VwapReport> run_vwap(
     int64_t n_child = 0;
     int64_t remaining = total_qty;
     Side side_enum = parse_side(side);
-    int64_t latency_events = 0;
-    if (latency_us > 0 && cfg.dt_us > 0) {
-        latency_events = (latency_us + cfg.dt_us - 1) / cfg.dt_us;
-    }
-    struct PendingOrder {
-        int64_t due_i;
+    struct PendingEvent {
+        int64_t due_ts;
         int64_t qty;
+        int64_t seq;
     };
-    std::deque<PendingOrder> pending;
+    struct PendingEventCmp {
+        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            if (a.due_ts != b.due_ts) {
+                return a.due_ts > b.due_ts;
+            }
+            return a.seq > b.seq;
+        }
+    };
+    std::priority_queue<PendingEvent, std::vector<PendingEvent>, PendingEventCmp> pending;
+    int64_t pending_seq = 0;
 
     for (int64_t i = 0; i < horizon_events; ++i) {
         ts += cfg.dt_us;
 
         flow.step(book, ts);
 
-        while (!pending.empty() && pending.front().due_i <= i) {
-            int64_t qty = pending.front().qty;
-            pending.pop_front();
+        while (!pending.empty() && pending.top().due_ts <= ts) {
+            int64_t qty = pending.top().qty;
+            pending.pop();
             if (qty <= 0) {
                 continue;
             }
@@ -521,14 +534,15 @@ std::pair<LimitOrderBook, VwapReport> run_vwap(
 
             if (child_qty > 0) {
                 n_child += 1;
-                if (latency_events == 0) {
+                if (latency_us <= 0) {
                     auto fills = book.add_market(side_enum, child_qty, ts);
                     for (const auto& f : fills) {
                         filled_qty += f.qty;
                         notional += f.qty * f.px;
                     }
                 } else {
-                    pending.push_back(PendingOrder{i + latency_events, child_qty});
+                    pending.push(PendingEvent{ts + latency_us, child_qty, pending_seq});
+                    pending_seq += 1;
                 }
                 remaining = total_qty - filled_qty;
                 if (remaining <= 0) {

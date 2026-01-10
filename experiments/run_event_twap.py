@@ -1,5 +1,6 @@
 from sim.flow import FlowConfig
 from sim.event_sim import ExchangeConfig, TwapAgent, run_event_sim
+from experiments.progress import progress_bar
 
 
 if __name__ == "__main__":
@@ -16,6 +17,7 @@ if __name__ == "__main__":
     )
     agent = TwapAgent(total_qty=1000, child_interval_events=200)
 
+    progress_bar(0, 1, prefix="event_twap")
     book, agent = run_event_sim(
         horizon_events=10_000,
         cfg=cfg,
@@ -24,6 +26,7 @@ if __name__ == "__main__":
         seed=0,
         use_hawkes=False,
     )
+    progress_bar(1, 1, prefix="event_twap")
 
     print("=== event-driven TWAP ===")
     print("filled_qty:", agent.filled_qty)
