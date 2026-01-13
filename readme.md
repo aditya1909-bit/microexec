@@ -137,9 +137,10 @@ Evaluation also reports:
 
 Based on `experiments/out/compare_rl_twap_vwap.csv`:
 
-- All strategies completed the 1000 share target on all four files (completion_rate = 1.0).
-- RL consistently **reduced shortfall vs TWAP** on GBPJPY and EURJPY (lower cost).
-- VWAP often shows the **best shortfall** (large negative) when prices drift favorably later in the day, but it can also be worse when drift is adverse (EURUSD).
+- TWAP/VWAP completed the 1000 share target on all four files (completion_rate = 1.0).
+- RL nearly completed on JPY pairs (completion_rate = 0.999, unfilled_qty = 1), and fully completed on USD pairs.
+- RL reduced shortfall dramatically vs TWAP across all pairs (USDCAD/EURUSD/GBPJPY/EURJPY).
+- VWAP is highly path‑dependent: it produced large gains on USDCAD/GBPJPY/EURJPY, but a large loss on EURUSD.
 
 Interpretation:
 

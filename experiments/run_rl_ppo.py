@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--penalty-per-share", type=float, default=2.0)
     parser.add_argument("--total-updates", type=int, default=1000)
     parser.add_argument("--rollout-steps", type=int, default=512)
+    parser.add_argument("--mp-envs", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--num-envs", type=int, default=-1)
     parser.add_argument("--num-threads", type=int, default=-1)
     args = parser.parse_args()
@@ -80,8 +81,9 @@ def main() -> None:
         minibatch_size=256,
         update_epochs=4,
         seed=0,
+        use_mp_envs=args.mp_envs,
     )
-    flow_cfg = FlowConfig()
+    flow_cfg = None if args.mp_envs else FlowConfig()
 
     if args.device is None:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -114,12 +116,20 @@ def main() -> None:
         )
         avg_history.append(avg)
 
+    def _rollout_progress(cur: int, total: int) -> None:
+        progress_bar(cur, total, prefix="rollout")
+
+    def _opt_progress(cur: int, total: int) -> None:
+        progress_bar(cur, total, prefix="opt")
+
     model = train_ppo(
         env_cfg=env_cfg,
         flow_cfg=flow_cfg,
         ppo_cfg=ppo_cfg,
         device=device,
         progress_fn=_progress,
+        rollout_progress_fn=_rollout_progress,
+        opt_progress_fn=_opt_progress,
     )
 
     out_dir = Path(__file__).resolve().parent / "out"
@@ -145,7 +155,8 @@ def main() -> None:
     eval_rewards: list[float] = []
     eval_infos: list[dict] = []
     for _ in range(eval_episodes):
-        env = InventoryLiquidationEnv(env_cfg, flow_cfg=flow_cfg)
+        eval_flow_cfg = FlowConfig() if flow_cfg is None else flow_cfg
+        env = InventoryLiquidationEnv(env_cfg, flow_cfg=eval_flow_cfg)
         obs = env.reset()
         obs_tensor = torch.tensor([obs], dtype=torch.float32, device=device)
 
