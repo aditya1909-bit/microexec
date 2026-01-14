@@ -163,6 +163,38 @@ Summary view:
 
 High variance across episodes is expected with historical FX data due to non-stationarity. If the RL curve is unstable, consider lowering the PPO learning rate or increasing minibatch size.
 
+## Market Making (Avellaneda–Stoikov)
+
+The event-driven sim includes an inventory-aware Avellaneda–Stoikov market maker with optional latency jitter, inside-spread improvement, and imbalance-aware skew. The grid search script sweeps key parameters and ranks by per-run event Sharpe.
+
+Run a grid search with log-normal latency jitter:
+
+```
+python3 -m experiments.run_mm_as_grid \
+  --order-latency-us 2000 --order-latency-jitter-us 1000 --order-latency-jitter-dist lognormal \
+  --order-latency-logn-mu 6.5 --order-latency-logn-sigma 0.6 \
+  --md-latency-us 500 --md-latency-jitter-us 300 --md-latency-jitter-dist lognormal \
+  --md-latency-logn-mu 5.5 --md-latency-logn-sigma 0.5 \
+  --snapshot-interval-us 1000 --max-msgs-per-sec 200 --min-resting-us 5000
+```
+
+Note: `sharpe_event_mean` is computed per run from event-level MTM deltas and then averaged across seeds; `sharpe_event_adj_mean` adds an inventory penalty.
+
+Interpretation:
+
+- `mtm_mean` is the average terminal mark-to-market across seeds, so it captures the strategy's net PnL in the simulated regime.
+- `sharpe_event_mean` summarizes the stability of per-event PnL (event-level MTM deltas) and is less sensitive to tail outcomes than raw MTM.
+- Use both together: high `mtm_mean` with low `sharpe_event_mean` can indicate unstable PnL, while high values of both imply robust performance.
+- In the latest grid run with log-normal latency jitter, the top configs landed around `mtm_mean` ≈ 11.9k–14.9k and `sharpe_event_mean` ≈ 13.0–15.5.
+- The top configs tend to quote inside the spread (`improve_best=True`) with moderate risk aversion and tight `kappa`, which increases fills but also inventory swings.
+
+Limitations and oddities:
+
+- PnL is driven by the synthetic flow model and overlay traffic, so results are sensitive to `overlay_p_market`, latency, and flow parameters.
+- Per-event Sharpe can still look large because it is scaled by the number of events; it is not time-annualized.
+- If the final MTM differs from the last event snapshot, it can shift Sharpe; we append the terminal MTM to align deltas.
+- Inventory penalties are a proxy; they do not model funding or capital constraints, so extreme inventory can still look good on raw MTM.
+
 ## Roadmap
 
 1. Book diagnostics (depth, imbalance, spread statistics)
