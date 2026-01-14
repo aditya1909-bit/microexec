@@ -70,6 +70,34 @@ print(fills)
 print(book.best_bid(), book.best_ask())
 ```
 
+## Strategy Demo
+
+### 1. Train the RL Liquidation Agent
+
+Train a PPO agent to liquidate inventory while minimizing market impact.
+
+```
+python -m experiments.run_rl_ppo
+```
+
+### 2. Run High-Frequency Market Making
+
+Run the Avellaneda–Stoikov agent on historical EUR/USD data.
+
+```
+python -m experiments.run_mm_as \
+  --historical-path data/EURUSD-2025-07.csv \
+  --risk-aversion 0.1 --kappa 0.5
+```
+
+### 3. Optimize Parameters
+
+Run a parallelized grid search to find robust inventory skew and spread parameters.
+
+```
+python -m experiments.run_mm_as_grid --max-workers 8
+```
+
 ## TrueFX Data (Historical Replay)
 
 TrueFX CSVs are used for historical replay. The C++ HistoricalOrderFlow parses TrueFX bid/ask rows and injects BBO quotes into the book as large resting liquidity.
